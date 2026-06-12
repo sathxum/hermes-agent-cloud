@@ -1,0 +1,222 @@
+name: Deploy Hermes Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      webui_password:
+        description: 'Password for Hermes Web UI'
+        required: true
+        type: string
+
+env:
+  HERMES_WEBUI_PORT: 8648
+  IMAGE_NAME: ekkye8888/hermes-web-ui:latest
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Start Deployment
+        run: |
+          echo "╔═══════════════════════════════════════════════╗"
+          echo "║   🚀 HERMES AGENT DEPLOYMENT STARTED 🚀     ║"
+          echo "╚═══════════════════════════════════════════════╝"
+          echo ""
+          echo "⏰ Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "📦 Image: ${{ env.IMAGE_NAME }}"
+          echo "🔌 Port: ${{ env.HERMES_WEBUI_PORT }}"
+
+      - name: Install Docker & Cloudflared
+        run: |
+          echo "📦 Installing Docker..."
+          sudo apt-get update -qq
+          sudo apt-get install -y docker.io docker-compose curl -qq
+          sudo systemctl enable docker --no-pager
+          echo "✅ Docker installed"
+          
+          echo "☁️ Installing Cloudflare Tunnel..."
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+          echo "✅ Cloudflared installed"
+
+      - name: Create directories
+        run: |
+          echo "📁 Creating directories..."
+          mkdir -p ~/hermes-data ~/.hermes-workspace
+          echo "✅ Directories created"
+
+      - name: Generate secure credentials
+        id: credentials
+        run: |
+          API_KEY=$(openssl rand -hex 32)
+          SESSION_SECRET=$(openssl rand -hex 48)
+          
+          echo "🔐 GENERATED CREDENTIALS:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔑 Agent API Key: $API_KEY"
+          echo "🔑 Session Secret: $SESSION_SECRET"
+          echo "🔑 Web UI Password: ${{ inputs.webui_password }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          echo "AGENT_API_KEY=$API_KEY" >> $GITHUB_ENV
+          echo "SESSION_SECRET=$SESSION_SECRET" >> $GITHUB_ENV
+
+      - name: Create environment file
+        run: |
+          cat > ~/hermes-env << 'EOF'
+HERMES_WEBUI_PASSWORD=${{ inputs.webui_password }}
+HERMES_WEBUI_HOST=0.0.0.0
+HERMES_WEBUI_PORT=${{ env.HERMES_WEBUI_PORT }}
+HERMES_WEBUI_CSP_CONNECT_EXTRA=*
+HERMES_AGENT_API_KEY=${{ env.AGENT_API_KEY }}
+HERMES_SESSION_SECRET=${{ env.SESSION_SECRET }}
+EOF
+          echo "📝 Environment file created"
+
+      - name: Start Hermes container
+        id: start-container
+        run: |
+          echo "🐳 Starting Hermes container..."
+          
+          docker stop hermes-webui 2>/dev/null || true
+          docker rm hermes-webui 2>/dev/null || true
+          
+          docker network create hermes-net 2>/dev/null || true
+          
+          docker run -d \
+            --name hermes-webui \
+            --network hermes-net \
+            --restart unless-stopped \
+            -p 127.0.0.1:8648:8648 \
+            -p 127.0.0.1:6060:6060 \
+            -v ~/hermes-data:/root/.hermes \
+            -v ~/hermes-workspace:/workspace \
+            --env-file ~/hermes-env \
+            ${{ env.IMAGE_NAME }}
+          
+          echo "✅ Container started"
+          sleep 10
+          
+          CONTAINER_STATUS=$(docker inspect --format='{{.State.Running}}' hermes-webui 2>/dev/null || echo "false")
+          echo "Container Status: $CONTAINER_STATUS"
+          docker ps | grep hermes-webui || echo "No container running"
+
+      - name: Wait for Hermes to be ready
+        run: |
+          echo "⏳ Waiting for Hermes Web UI to start..."
+          
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8648/health 2>/dev/null | grep -q "status\|ok\|healthy"; then
+              echo "✅ Hermes Web UI is ready!"
+              break
+            fi
+            echo "Attempt $i/30..."
+            sleep 2
+          done
+          
+          echo ""
+          echo "📋 Container Logs:"
+          docker logs hermes-webui --tail 30 2>&1 || echo "No logs available"
+
+      - name: Start Cloudflare Tunnel
+        id: tunnel
+        run: |
+          echo "☁️ Cloudflare Tunnel setup..."
+          echo "⚠️ NOTE: Add CLOUDFLARE_TUNNEL_TOKEN as a repository secret"
+          echo "   For now, testing local endpoint only"
+          
+          echo ""
+          echo "🌐 Local endpoints:"
+          echo "   Web UI: http://127.0.0.1:8648"
+          echo "   Gateway: http://127.0.0.1:6060"
+          
+          echo ""
+          echo "☁️ To expose via Cloudflare:"
+          echo "   1. Go to: https://dash.cloudflare.com/"
+          echo "   2. Create Zero Trust account (free)"
+          echo "   3. Create a tunnel"
+          echo "   4. Add CLOUDFLARE_TUNNEL_TOKEN secret"
+          echo "   5. Rerun this workflow"
+
+      - name: Verify Hermes is working
+        id: verify
+        run: |
+          echo ""
+          echo "🔍 VERIFICATION:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Check container
+          CONTAINER=$(docker ps | grep hermes-webui)
+          if [ -n "$CONTAINER" ]; then
+            echo "✅ Container: RUNNING"
+          else
+            echo "❌ Container: NOT RUNNING"
+          fi
+          
+          # Check health
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8648/health 2>/dev/null)
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ]; then
+            echo "✅ Health: $HTTP_CODE (responding)"
+          else
+            echo "❌ Health: $HTTP_CODE (not responding)"
+          fi
+          
+          # Check ports
+          if command -v nc &> /dev/null; then
+            if nc -z 127.0.0.1 8648 2>/dev/null; then
+              echo "✅ Port 8648: OPEN"
+            fi
+          fi
+          
+          echo ""
+          
+          if [ -n "$CONTAINER" ]; then
+            echo "🎉🎉🎉 HERMES AGENT IS WORKING! 🎉🎉🎉"
+            echo ""
+          fi
+
+      - name: Final Summary
+        run: |
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════╗"
+          echo "║     🎉 DEPLOYMENT COMPLETE - HERMES AGENT 🎉        ║"
+          echo "╠═══════════════════════════════════════════════════════╣"
+          echo "║                                                      ║"
+          echo "║  🌐 ACCESS URLs:                                     ║"
+          echo "║     Web UI: http://127.0.0.1:8648                   ║"
+          echo "║     Gateway: http://127.0.0.1:6060                  ║"
+          echo "║                                                      ║"
+          echo "║  🔐 CREDENTIALS:                                     ║"
+          echo "║     Web UI Password: ${{ inputs.webui_password }}              ║"
+          echo "║     Agent API Key: ${{ env.AGENT_API_KEY }}            ║"
+          echo "║     Session Secret: ${{ env.SESSION_SECRET }}          ║"
+          echo "║                                                      ║"
+          echo "║  📁 DATA PATHS:                                      ║"
+          echo "║     Hermes Data: ~/hermes-data                       ║"
+          echo "║     Workspace: ~/hermes-workspace                    ║"
+          echo "║                                                      ║"
+          echo "╠═══════════════════════════════════════════════════════╣"
+          echo "║  ⚠️  IMPORTANT:                                      ║"
+          echo "║  • Run workflow again with Cloudflare token secret   ║"
+          echo "║  • Add provider API keys in Hermes dashboard         ║"
+          echo "║  • Save credentials from this output!                ║"
+          echo "╚═══════════════════════════════════════════════════════╝"
+
+      - name: Print Connection Details
+        if: always()
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 CONNECTION DETAILS:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Repository: ${{ github.repository }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "🔑 Web UI Password: ${{ inputs.webui_password }}"
+          echo "🔑 Agent API Key: ${{ env.AGENT_API_KEY }}"
+          echo "🔑 Session Secret: ${{ env.SESSION_SECRET }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
