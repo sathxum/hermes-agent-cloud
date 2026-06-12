@@ -1,4 +1,4 @@
-name: Deploy Hermes Agent - Official NousResearch
+name: Hermes Agent - Official Dashboard + Cloudflare
 
 on:
   push:
@@ -15,39 +15,90 @@ jobs:
 
       - name: Install Docker
         run: |
-          sudo apt-get remove -y containerd 2>/dev/null || true
+          sudo apt-get remove -y containerd docker.io 2>/dev/null || true
           curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
           sudo sh /tmp/get-docker.sh
           sudo systemctl enable docker
+          docker --version
 
       - name: Install Cloudflared
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
 
-      - name: Create .env
+      - name: Setup Hermes Data Directory
         run: |
           mkdir -p ~/.hermes
-          SECRET=$(openssl rand -base64 32)
-          API_KEY=$(openssl rand -hex 32)
+          chmod 755 ~/.hermes
+          echo "✅ Directory created: ~/.hermes"
+
+      - name: Generate Dashboard Credentials
+        run: |
+          # Generate secure credentials for dashboard auth
+          DASHBOARD_USERNAME="admin"
+          DASHBOARD_PASSWORD="HarmesDeploy2024!"
+          DASHBOARD_SECRET=$(openssl rand -base64 32)
+          API_SERVER_KEY=$(openssl rand -hex 32)
           
+          echo "🔐 GENERATED CREDENTIALS:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "👤 Username: $DASHBOARD_USERNAME"
+          echo "🔑 Password: $DASHBOARD_PASSWORD"
+          echo "🛡️  Secret: $DASHBOARD_SECRET"
+          echo "🔌 API Key: $API_SERVER_KEY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Save to GitHub env
+          echo "DASHBOARD_USERNAME=$DASHBOARD_USERNAME" >> $GITHUB_ENV
+          echo "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD" >> $GITHUB_ENV
+          echo "DASHBOARD_SECRET=$DASHBOARD_SECRET" >> $GITHUB_ENV
+          echo "API_SERVER_KEY=$API_SERVER_KEY" >> $GITHUB_ENV
+
+      - name: Create .env File
+        run: |
           cat > ~/.hermes/.env << EOF
-HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
-HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=HarmesDeploy2024!
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$SECRET
+# Hermes Dashboard Authentication (Official Basic Auth)
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${{ env.DASHBOARD_USERNAME }}
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${{ env.DASHBOARD_PASSWORD }}
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=${{ env.DASHBOARD_SECRET }}
+
+# API Server Configuration
 API_SERVER_ENABLED=true
 API_SERVER_HOST=0.0.0.0
-API_SERVER_KEY=$API_KEY
+API_SERVER_KEY=${{ env.API_SERVER_KEY }}
+API_SERVER_CORS_ORIGINS=*
+
+# Enable Dashboard
 HERMES_DASHBOARD=1
+HERMES_DASHBOARD_HOST=0.0.0.0
+HERMES_DASHBOARD_PORT=9119
 EOF
           chmod 600 ~/.hermes/.env
+          echo "✅ .env file created with credentials"
+          cat ~/.hermes/.env | head -10
 
-      - name: Pull and Start
+      - name: Pull Official Hermes Agent Image
         run: |
+          echo "📦 Pulling official Hermes Agent image..."
           docker pull nousresearch/hermes-agent:latest
+          echo "✅ Image pulled: nousresearch/hermes-agent:latest"
+
+      - name: Stop Existing Container
+        run: |
           docker stop hermes 2>/dev/null || true
           docker rm hermes 2>/dev/null || true
+          echo "✅ Cleaned up existing containers"
+
+      - name: Start Hermes Gateway + Dashboard
+        run: |
+          echo "🚀 Starting Hermes Agent with Dashboard..."
+          echo "📋 This will start:"
+          echo "   - Gateway on port 8642"
+          echo "   - Dashboard on port 9119"
+          echo "   - With authentication enabled"
+          echo ""
           
           docker run -d \
             --name hermes \
@@ -55,38 +106,165 @@ EOF
             -p 8642:8642 \
             -p 9119:9119 \
             -v ~/.hermes:/opt/data \
+            -e HERMES_DASHBOARD=1 \
+            -e HERMES_DASHBOARD_HOST=0.0.0.0 \
+            -e HERMES_DASHBOARD_PORT=9119 \
+            -e API_SERVER_ENABLED=true \
+            -e API_SERVER_HOST=0.0.0.0 \
+            -e API_SERVER_KEY=${{ env.API_SERVER_KEY }} \
+            -e API_SERVER_CORS_ORIGINS='*' \
+            -e HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${{ env.DASHBOARD_USERNAME }} \
+            -e HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${{ env.DASHBOARD_PASSWORD }} \
+            -e HERMES_DASHBOARD_BASIC_AUTH_SECRET=${{ env.DASHBOARD_SECRET }} \
             --env-file ~/.hermes/.env \
             nousresearch/hermes-agent:latest gateway run
           
+          echo "✅ Hermes container started!"
           sleep 30
-          docker ps
-
-      - name: Cloudflare Tunnel
-        run: |
-          pkill -f cloudflared 2>/dev/null || true
-          nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
           
-          for i in {1..20}; do
-            URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log | head -1)
-            [ -n "$URL" ] && echo "URL=$URL" >> $GITHUB_ENV && break
+          echo ""
+          echo "📋 Running containers:"
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+      - name: Verify Dashboard is Running
+        run: |
+          echo "🔍 Verifying Dashboard..."
+          echo ""
+          
+          # Wait for dashboard to be ready
+          for i in {1..30}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9119/ 2>/dev/null)
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "401" ]; then
+              echo "✅ Dashboard responding! (HTTP $HTTP_CODE)"
+              break
+            fi
+            echo "Waiting for dashboard... $i/30"
             sleep 2
           done
-          echo "☁️ URL: $(cat cloudflared.log | grep trycloudflare | head -1)"
+          
+          echo ""
+          echo "📋 Dashboard Status Check:"
+          curl -s http://127.0.0.1:9119/api/status 2>/dev/null | jq '.' || curl -s http://127.0.0.1:9119/api/status
+          
+          echo ""
+          echo "📋 Container logs:"
+          docker logs hermes --tail 50
 
-      - name: Display
+      - name: Start Cloudflare Tunnel
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🎉 HERMES AGENT OFFICIAL DEPLOYED!"
-          echo "🌐 URL: ${{ env.URL }}"
-          echo "🔑 Username: admin"
-          echo "🔑 Password: HarmesDeploy2024!"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-      - name: Monitor
-        run: |
-          for i in {1..360}; do
-            docker ps | grep -q hermes || docker start hermes
-            pgrep -f cloudflared > /dev/null || nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
-            [ $((i % 5)) -eq 0 ] && echo "⏰ $i min | $(grep trycloudflare cloudflared.log 2>/dev/null | head -1)"
-            sleep 60
+          echo "☁️ Starting Cloudflare Quick Tunnel..."
+          echo "📍 Exposing Dashboard at port 9119"
+          
+          pkill -f cloudflared 2>/dev/null || true
+          
+          # Start tunnel to dashboard
+          nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
+          
+          # Wait for URL to appear
+          for i in {1..30}; do
+            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "✅ TUNNEL URL: $TUNNEL_URL"
+              echo "FINAL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+              break
+            fi
+            echo "Waiting for tunnel URL... $i/30"
+            sleep 2
           done
+          
+          FINAL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+          if [ -z "$FINAL_URL" ]; then
+            echo "❌ Failed to get tunnel URL!"
+            cat cloudflared.log
+            exit 1
+          fi
+
+      - name: Display Final Access Details
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════════════════════════════════╗"
+          echo "║                     🎉 HERMES AGENT OFFICIAL - DEPLOYED SUCCESS! 🎉                     ║"
+          echo "╠══════════════════════════════════════════════════════════════════════════════════════════╣"
+          echo "║                                                                                          ║"
+          echo "║  🌐 PUBLIC DASHBOARD URL:                                                               ║"
+          echo "║     ${{ env.FINAL_URL }}                                                         ║"
+          echo "║                                                                                          ║"
+          echo "║  📋 OFFICIAL IMAGE: nousresearch/hermes-agent:latest                                  ║"
+          echo "║                                                                                          ║"
+          echo "║  🔐 LOGIN CREDENTIALS (Dashboard):                                                     ║"
+          echo "║     Username: ${{ env.DASHBOARD_USERNAME }}                                                    ║"
+          echo "║     Password: ${{ env.DASHBOARD_PASSWORD }}                                                    ║"
+          echo "║                                                                                          ║"
+          echo "║  📁 PORTS EXPOSED:                                                                     ║"
+          echo "║     Dashboard: 9119 | Gateway: 8642                                                    ║"
+          echo "║                                                                                          ║"
+          echo "║  🔑 API SERVER KEY: ${{ env.API_SERVER_KEY }}          ║"
+          echo "║                                                                                          ║"
+          echo "╠══════════════════════════════════════════════════════════════════════════════════════════╣"
+          echo "║  ⏰ This deployment runs for UP TO 6 HOURS                                              ║"
+          echo "║  💡 Open the URL above and login with credentials shown above                          ║"
+          echo "║  ⚠️  Keep this workflow RUNNING for continued access                                   ║"
+          echo "╚══════════════════════════════════════════════════════════════════════════════════════════╝"
+
+      - name: Keep Running - Monitor
+        run: |
+          echo "⏳ Starting continuous monitoring..."
+          echo "Will maintain Hermes + Cloudflare Tunnel for up to 6 hours..."
+          echo ""
+          
+          ELAPSED=0
+          TUNNEL_URL="${{ env.FINAL_URL }}"
+          
+          while [ $ELAPSED -lt 360 ]; do
+            # Check and restart Hermes if needed
+            if docker ps | grep -q hermes; then
+              :
+            else
+              echo "[$ELAPSED min] 🔄 Restarting Hermes container..."
+              docker start hermes 2>/dev/null || \
+              docker run -d \
+                --name hermes \
+                --restart unless-stopped \
+                -p 8642:8642 \
+                -p 9119:9119 \
+                -v ~/.hermes:/opt/data \
+                -e HERMES_DASHBOARD=1 \
+                -e API_SERVER_KEY=${{ env.API_SERVER_KEY }} \
+                --env-file ~/.hermes/.env \
+                nousresearch/hermes-agent:latest gateway run
+              sleep 10
+            fi
+            
+            # Check and restart Tunnel if needed
+            if pgrep -f cloudflared > /dev/null; then
+              :
+            else
+              echo "[$ELAPSED min] 🔄 Restarting Cloudflare Tunnel..."
+              nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
+              sleep 10
+              TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+            fi
+            
+            # Print status every 5 minutes
+            if [ $((ELAPSED % 5)) -eq 0 ] && [ $ELAPSED -gt 0 ]; then
+              CURRENT_TUNNEL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+              if [ -n "$CURRENT_TUNNEL" ]; then
+                TUNNEL_URL="$CURRENT_TUNNEL"
+              fi
+              
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "⏰ Time Elapsed: $ELAPSED minutes | Remaining: $((360 - ELAPSED)) minutes"
+              echo "🌐 Public URL: $TUNNEL_URL"
+              echo "👤 Username: ${{ env.DASHBOARD_USERNAME }}"
+              echo "🔑 Password: ${{ env.DASHBOARD_PASSWORD }}"
+              echo "✅ Hermes: $(docker ps | grep hermes && echo 'RUNNING' || echo 'RESTARTING')"
+              echo "☁️  Tunnel: $(pgrep -f cloudflared && echo 'ACTIVE' || echo 'RESTARTING')"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            fi
+            
+            sleep 60
+            ELAPSED=$((ELAPSED + 1))
+          done
+          
+          echo ""
+          echo "⏰⏰⏰ 6 HOURS COMPLETED - DEPLOYMENT ENDED ⏰⏰⏰"
