@@ -40,12 +40,10 @@ jobs:
           DASHBOARD_SECRET=$(openssl rand -base64 32)
           API_SERVER_KEY=$(openssl rand -hex 32)
           
-          echo "=== CREDENTIALS ==="
           echo "Username: $DASHBOARD_USERNAME"
           echo "Password: $DASHBOARD_PASSWORD"
           echo "Secret: $DASHBOARD_SECRET"
           echo "API Key: $API_SERVER_KEY"
-          echo "===================="
           
           echo "DASHBOARD_USERNAME=$DASHBOARD_USERNAME" >> $GITHUB_ENV
           echo "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD" >> $GITHUB_ENV
@@ -100,7 +98,6 @@ jobs:
 
       - name: Verify Dashboard
         run: |
-          echo "Checking Dashboard..."
           for i in $(seq 1 30); do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9119/ 2>/dev/null)
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "401" ]; then
@@ -130,41 +127,44 @@ jobs:
           
           if [ -z "$TUNNEL_URL" ]; then
             echo "FAIL: No tunnel URL"
-            cat cloudflared.log
             exit 1
           fi
 
+      - name: Save URL to Repo File
+        run: |
+          printf 'URL=%s\nUSER=%s\nPASS=%s\nAPI_KEY=%s\nIMAGE=nousresearch/hermes-agent:latest\nSTATUS=DEPLOYED\n' \
+            "${{ env.TUNNEL_URL }}" \
+            "${{ env.DASHBOARD_USERNAME }}" \
+            "${{ env.DASHBOARD_PASSWORD }}" \
+            "${{ env.API_SERVER_KEY }}" \
+            > deploy-info.txt
+          cat deploy-info.txt
+
+      - name: Commit URL File
+        run: |
+          git config user.email "deploy@hermes-agent.dev"
+          git config user.name "Hermes Deploy Bot"
+          git add deploy-info.txt
+          git commit -m "feat: deployment info"
+          git push origin main || echo "Push done"
+
       - name: Display Final Access Details
         run: |
-          echo ""
           echo "========================================"
-          echo "  HERMES AGENT OFFICIAL - DEPLOYED!"
+          echo "  HERMES AGENT - DEPLOYED!"
           echo "========================================"
-          echo ""
-          echo "  PUBLIC URL:"
-          echo "  ${{ env.TUNNEL_URL }}"
-          echo ""
-          echo "  IMAGE: nousresearch/hermes-agent:latest"
-          echo ""
-          echo "  LOGIN CREDENTIALS:"
-          echo "  Username: ${{ env.DASHBOARD_USERNAME }}"
-          echo "  Password: ${{ env.DASHBOARD_PASSWORD }}"
-          echo ""
-          echo "  PORTS: Dashboard=9119 | Gateway=8642"
-          echo "  API KEY: ${{ env.API_SERVER_KEY }}"
-          echo ""
-          echo "  RUNTIME: 6 hours max"
+          echo "  URL: ${{ env.TUNNEL_URL }}"
+          echo "  User: ${{ env.DASHBOARD_USERNAME }}"
+          echo "  Pass: ${{ env.DASHBOARD_PASSWORD }}"
+          echo "  API Key: ${{ env.API_SERVER_KEY }}"
+          echo "  RUNTIME: 6 hours"
           echo "========================================"
-          echo ""
 
       - name: Monitor for 6 Hours
         run: |
-          echo "Starting 6-hour monitoring..."
           ELAPSED=0
-          
           while [ $ELAPSED -lt 360 ]; do
             if ! docker ps | grep -q hermes; then
-              echo "[$ELAPSED min] Restarting Hermes..."
               docker start hermes 2>/dev/null || docker run -d \
                 --name hermes \
                 --restart unless-stopped \
@@ -179,7 +179,6 @@ jobs:
             fi
             
             if ! pgrep -f cloudflared > /dev/null; then
-              echo "[$ELAPSED min] Restarting Tunnel..."
               nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
               sleep 10
             fi
@@ -187,14 +186,20 @@ jobs:
             if [ $((ELAPSED % 5)) -eq 0 ] && [ $ELAPSED -gt 0 ]; then
               TUNNEL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | tail -1)
               if [ -n "$TUNNEL" ]; then
-                echo "=========================================="
-                echo "Time: $ELAPSED min | Left: $((360-ELAPSED)) min"
-                echo "URL: $TUNNEL"
-                echo "User: ${{ env.DASHBOARD_USERNAME }}"
-                echo "Pass: ${{ env.DASHBOARD_PASSWORD }}"
-                echo "Hermes: $(docker ps | grep -q hermes && echo RUNNING || echo RESTARTING)"
-                echo "Tunnel: $(pgrep -f cloudflared > /dev/null && echo ACTIVE || echo RESTARTING)"
-                echo "=========================================="
+                printf 'URL=%s\nUSER=%s\nPASS=%s\nAPI_KEY=%s\nSTATUS=RUNNING\nMINUTES=%s\n' \
+                  "$TUNNEL" \
+                  "${{ env.DASHBOARD_USERNAME }}" \
+                  "${{ env.DASHBOARD_PASSWORD }}" \
+                  "${{ env.API_SERVER_KEY }}" \
+                  "$ELAPSED" \
+                  > deploy-info.txt
+                git config user.email "deploy@hermes-agent.dev"
+                git config user.name "Hermes Deploy Bot"
+                git add deploy-info.txt
+                git commit -m "update: $ELAPSED min" 2>/dev/null
+                git push origin main 2>/dev/null || true
+                
+                echo "[$ELAPSED min] URL: $TUNNEL | User: ${{ env.DASHBOARD_USERNAME }}"
               fi
             fi
             
@@ -202,6 +207,4 @@ jobs:
             ELAPSED=$((ELAPSED + 1))
           done
           
-          echo "=========================================="
-          echo "  6 HOURS DONE - DEPLOYMENT ENDED"
-          echo "=========================================="
+          echo "6 HOURS COMPLETED"
