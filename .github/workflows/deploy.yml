@@ -4,12 +4,6 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-  actions: read
-  statuses: read
-  gists: write
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -46,10 +40,12 @@ jobs:
           DASHBOARD_SECRET=$(openssl rand -base64 32)
           API_SERVER_KEY=$(openssl rand -hex 32)
           
+          echo "=== CREDENTIALS ==="
           echo "Username: $DASHBOARD_USERNAME"
           echo "Password: $DASHBOARD_PASSWORD"
           echo "Secret: $DASHBOARD_SECRET"
           echo "API Key: $API_SERVER_KEY"
+          echo "===================="
           
           echo "DASHBOARD_USERNAME=$DASHBOARD_USERNAME" >> $GITHUB_ENV
           echo "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD" >> $GITHUB_ENV
@@ -104,6 +100,7 @@ jobs:
 
       - name: Verify Dashboard
         run: |
+          echo "Checking Dashboard..."
           for i in $(seq 1 30); do
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9119/ 2>/dev/null)
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "401" ]; then
@@ -120,7 +117,6 @@ jobs:
           pkill -f cloudflared 2>/dev/null || true
           nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
           
-          TUNNEL_URL=""
           for i in $(seq 1 30); do
             TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
             if [ -n "$TUNNEL_URL" ]; then
@@ -138,39 +134,19 @@ jobs:
             exit 1
           fi
 
-      - name: Save Access Info to Gist
+      - name: Display Final Access Details
         run: |
-          TUNNEL_URL="${{ env.TUNNEL_URL }}"
-          USERNAME="${{ env.DASHBOARD_USERNAME }}"
-          PASSWORD="${{ env.DASHBOARD_PASSWORD }}"
-          API_KEY="${{ env.API_SERVER_KEY }}"
-          
-          python3 gist_update.py "$TUNNEL_URL" "$USERNAME" "$PASSWORD" "$API_KEY"
-          
-          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PATCH "https://api.github.com/gists/f6e14605827ea2fc1d41ee79b54e5c92" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d @/tmp/gist_payload.json)
-          
-          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
-          echo "Gist HTTP: $HTTP_CODE"
-          
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "Gist update failed but continuing..."
-          else
-            echo "[OK] Gist updated: https://gist.github.com/sathxum/f6e14605827ea2fc1d41ee79b54e5c92"
-          fi
-
-      - name: Display Access Info
-        run: |
-          echo "============================================"
-          echo "  HERMES AGENT OFFICIAL - DEPLOYED!"
-          echo "============================================"
           echo ""
-          echo "  PUBLIC URL: ${{ env.TUNNEL_URL }}"
+          echo "========================================"
+          echo "  HERMES AGENT OFFICIAL - DEPLOYED!"
+          echo "========================================"
+          echo ""
+          echo "  PUBLIC URL:"
+          echo "  ${{ env.TUNNEL_URL }}"
+          echo ""
           echo "  IMAGE: nousresearch/hermes-agent:latest"
           echo ""
-          echo "  LOGIN:"
+          echo "  LOGIN CREDENTIALS:"
           echo "  Username: ${{ env.DASHBOARD_USERNAME }}"
           echo "  Password: ${{ env.DASHBOARD_PASSWORD }}"
           echo ""
@@ -178,9 +154,8 @@ jobs:
           echo "  API KEY: ${{ env.API_SERVER_KEY }}"
           echo ""
           echo "  RUNTIME: 6 hours max"
-          echo "============================================"
+          echo "========================================"
           echo ""
-          echo "  Gist: https://gist.github.com/sathxum/f6e14605827ea2fc1d41ee79b54e5c92"
 
       - name: Monitor for 6 Hours
         run: |
