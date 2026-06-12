@@ -1,220 +1,146 @@
-name: Deploy Hermes Agent with Cloudflare Tunnel
+name: Deploy Hermes Agent - Cloudflare Tunnel
 
 on:
-  workflow_dispatch:
-    inputs:
-      webui_password:
-        description: 'Password for Hermes Web UI'
-        required: true
-        type: string
-        default: 'HarmesDeploy2024!'
-      cloudflare_token:
-        description: 'Cloudflare Tunnel Token (optional - leave empty for quick tunnel)'
-        required: false
-        type: string
-        default: ''
-
-env:
-  HERMES_WEBUI_PORT: 8648
+  push:
+    branches: [main]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
+    timeout-minutes: 360
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Create directories
+      - name: Set up Docker
         run: |
-          mkdir -p ~/hermes-data ~/workspace
-          echo "✅ Directories created"
+          sudo apt-get update
+          sudo apt-get install -y docker.io docker-compose curl
+          docker --version
 
       - name: Install Cloudflared
         run: |
-          echo "☁️ Installing Cloudflare Tunnel..."
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
-          chmod +x /tmp/cloudflared
-          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
           cloudflared --version
 
-      - name: Generate Credentials
-        run: |
-          echo "🔐 CREDENTIALS:"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "Web UI Password: ${{ inputs.webui_password }}"
-          echo "Agent API Key: $(openssl rand -hex 32)"
-          echo "Session Secret: $(openssl rand -hex 48)"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          # Save credentials for later steps
-          echo "HERMES_PASSWORD=${{ inputs.webui_password }}" >> $GITHUB_ENV
-          echo "AGENT_API_KEY=$(openssl rand -hex 32)" >> $GITHUB_ENV
-          echo "SESSION_SECRET=$(openssl rand -hex 48)" >> $GITHUB_ENV
+      - name: Create Directories
+        run: mkdir -p ~/hermes-data ~/workspace && echo "✅ Done"
 
-      - name: Create environment file
+      - name: Pull Image
         run: |
-          cat > ~/hermes-env << 'EOF'
-HERMES_WEBUI_PASSWORD=${{ inputs.webui_password }}
-HERMES_WEBUI_HOST=0.0.0.0
-HERMES_WEBUI_PORT=8648
-HERMES_WEBUI_CSP_CONNECT_EXTRA=*
-EOF
-          echo "✅ Environment file created"
-
-      - name: Pull Hermes Image
-        run: |
-          echo "📦 Pulling Hermes Web UI image..."
+          echo "📦 Pulling Hermes..."
           docker pull ekkoye8888/hermes-web-ui:latest
-          echo "✅ Image pulled"
+          echo "✅ Pulled"
 
-      - name: Start Hermes Container
+      - name: Start Hermes
         run: |
-          echo "🐳 Starting Hermes container..."
-          
+          echo "🐳 Starting Hermes..."
           docker stop hermes-webui 2>/dev/null || true
           docker rm hermes-webui 2>/dev/null || true
-          docker network create hermes-net 2>/dev/null || true
           
           docker run -d \
             --name hermes-webui \
-            --network hermes-net \
-            --restart unless-stopped \
-            -p 127.0.0.1:8648:8648 \
-            -p 127.0.0.1:6060:6060 \
+            -p 8648:8648 \
+            -p 6060:6060 \
             -v ~/hermes-data:/root/.hermes \
             -v ~/workspace:/workspace \
-            --env-file ~/hermes-env \
+            -e HERMES_WEBUI_PASSWORD=HarmesDeploy2024! \
+            -e HERMES_WEBUI_HOST=0.0.0.0 \
             ekkoye8888/hermes-web-ui:latest
           
-          echo "✅ Container started"
-          sleep 10
-          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          echo "✅ Started"
+          sleep 15
+          docker ps
 
-      - name: Wait for Hermes to be ready
+      - name: Verify Hermes
         run: |
-          echo "⏳ Waiting for Hermes to be ready..."
-          for i in {1..30}; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8648/ 2>/dev/null)
-            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "404" ]; then
-              echo "✅ Hermes Web UI is ready! (HTTP $HTTP_CODE)"
-              break
-            fi
-            echo "Attempt $i/30..."
-            sleep 2
-          done
+          echo "🔍 Checking..."
+          docker logs hermes-webui --tail 20
+          echo ""
+          echo "✅ Container status:"
+          docker ps | grep hermes-webui || echo "Not running!"
 
       - name: Start Cloudflare Tunnel
-        id: tunnel
         run: |
-          echo "☁️ Starting Cloudflare Tunnel..."
+          echo "☁️ Starting Cloudflare Quick Tunnel..."
           
-          # Kill any existing cloudflared
-          pkill -f cloudflared 2>/dev/null || true
+          nohup cloudflared tunnel --url http://localhost:8648 > cloudflared.log 2>&1 &
           
-          if [ -n "${{ inputs.cloudflare_token }}" ]; then
-            # Use provided token (persistent tunnel)
-            echo "Using provided tunnel token..."
-            nohup cloudflared tunnel --token ${{ inputs.cloudflare_token }} > ~/cloudflared.log 2>&1 &
-            sleep 15
-            
-            # Get tunnel URL from Cloudflare dashboard or logs
-            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' ~/cloudflared.log 2>/dev/null | head -1)
-            if [ -z "$TUNNEL_URL" ]; then
-              TUNNEL_URL="Check Cloudflare Zero Trust Dashboard"
+          # Wait for URL
+          for i in {1..20}; do
+            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "✅ TUNNEL_URL=$TUNNEL_URL"
+              break
             fi
-          else
-            # Use quick tunnel (no account needed, temporary URL)
-            echo "Using quick tunnel (no token required)..."
-            nohup cloudflared tunnel --url http://localhost:8648 > ~/cloudflared.log 2>&1 &
-            
-            # Wait for URL to appear
-            for i in {1..30}; do
-              TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' ~/cloudflared.log 2>/dev/null | head -1)
-              if [ -n "$TUNNEL_URL" ]; then
-                echo "✅ Quick tunnel URL: $TUNNEL_URL"
-                break
-              fi
-              echo "Waiting for tunnel URL... ($i/30)"
-              sleep 2
-            done
-          fi
+            echo "Waiting... $i/20"
+            sleep 2
+          done
           
-          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
-          echo "☁️ Tunnel URL: $TUNNEL_URL"
-
-      - name: Verify Hermes is Running
-        run: |
-          echo "🔍 VERIFICATION:"
+          FINAL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+          echo "FINAL_URL=$FINAL_URL" >> $GITHUB_ENV
+          
+          echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          if docker ps | grep -q hermes-webui; then
-            echo "✅ Container: RUNNING"
-          else
-            echo "❌ Container: NOT RUNNING"
-          fi
-          
-          echo ""
-          echo "📋 Container Logs:"
-          docker logs hermes-webui --tail 30
+          echo "☁️ TUNNEL URL: $FINAL_URL"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Final Summary
+      - name: Display Access Details
         run: |
           echo ""
-          echo "╔════════════════════════════════════════════════════════════════════╗"
-          echo "║     🎉 HERMES AGENT DEPLOYED WITH CLOUDFLARE TUNNEL 🎉           ║"
-          echo "╠════════════════════════════════════════════════════════════════════╣"
-          echo "║                                                                    ║"
-          echo "║  🌐 PUBLIC ACCESS URL:                                            ║"
-          echo "║     ${{ env.TUNNEL_URL }}                                       ║"
-          echo "║                                                                    ║"
-          echo "║  🔐 CREDENTIALS:                                                  ║"
-          echo "║     Web UI Password: ${{ env.HERMES_PASSWORD }}                           ║"
-          echo "║     Agent API Key: ${{ env.AGENT_API_KEY }}                       ║"
-          echo "║     Session Secret: ${{ env.SESSION_SECRET }}                     ║"
-          echo "║                                                                    ║"
-          echo "║  💻 LOCAL ACCESS (if tunnel fails):                               ║"
-          echo "║     Web UI: http://localhost:8648                                 ║"
-          echo "║     Gateway: http://localhost:6060                                ║"
-          echo "║                                                                    ║"
-          echo "╠════════════════════════════════════════════════════════════════════╣"
-          echo "║  ⏰ This deployment will run for up to 6 hours                    ║"
-          echo "║  ⚠️  Keep this page open to maintain the tunnel                   ║"
-          echo "╚════════════════════════════════════════════════════════════════════╝"
+          echo "╔═══════════════════════════════════════════════════════════════════╗"
+          echo "║         🎉 HERMES AGENT - CLOUDFLARE TUNNEL ACTIVE 🎉           ║"
+          echo "╠═══════════════════════════════════════════════════════════════════╣"
+          echo "║                                                                   ║"
+          echo "║  🌐 PUBLIC URL: ${{ env.FINAL_URL }}                     ║"
+          echo "║                                                                   ║"
+          echo "║  🔑 PASSWORD: HarmesDeploy2024!                                  ║"
+          echo "║                                                                   ║"
+          echo "║  ⏰ This will run for up to 6 HOURS                               ║"
+          echo "║  💡 Keep this workflow running to maintain access                ║"
+          echo "║                                                                   ║"
+          echo "╚═══════════════════════════════════════════════════════════════════╝"
 
-      - name: Keep Tunnel Running
+      - name: Keep Running
         run: |
-          echo "⏳ Keeping tunnel running..."
-          echo "💡 This workflow will run for up to 6 hours"
+          echo "⏳ Keeping Hermes and Tunnel running..."
+          echo "⏰ Monitoring every 60 seconds..."
           echo ""
           
-          # Monitor tunnel every 60 seconds
-          for i in {1..360}; do
-            # Check if container is still running
-            if ! docker ps | grep -q hermes-webui; then
-              echo "❌ Container stopped! Restarting..."
+          ELAPSED=0
+          while [ $ELAPSED -lt 360 ]; do
+            # Check container
+            if docker ps | grep -q hermes-webui; then
+              echo "[$ELAPSED min] ✅ Hermes: RUNNING"
+            else
+              echo "[$ELAPSED min] 🔄 Restarting Hermes..."
               docker start hermes-webui
             fi
             
-            # Check if tunnel is running
-            if ! pgrep -f cloudflared > /dev/null; then
-              echo "❌ Tunnel stopped! Restarting..."
-              nohup cloudflared tunnel --url http://localhost:8648 > ~/cloudflared.log 2>&1 &
-              sleep 5
+            # Check tunnel
+            if pgrep -f cloudflared > /dev/null; then
+              TUNNEL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' ~/cloudflared.log 2>/dev/null | head -1)
+              echo "[$ELAPSED min] ☁️  Tunnel: $TUNNEL"
+            else
+              echo "[$ELAPSED min] 🔄 Restarting Tunnel..."
+              nohup cloudflared tunnel --url http://localhost:8648 > cloudflared.log 2>&1 &
             fi
             
-            # Get current tunnel URL
-            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' ~/cloudflared.log 2>/dev/null | head -1)
-            
-            # Every 5 minutes, print status
-            if [ $((i % 5)) -eq 0 ]; then
-              echo "⏰ Time elapsed: $((i / 60)) minutes | Tunnel: $TUNNEL_URL | Container: RUNNING"
-              echo "🔗 Access URL: $TUNNEL_URL"
+            # Print every 5 minutes
+            if [ $((ELAPSED % 5)) -eq 0 ] && [ $ELAPSED -gt 0 ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "⏰ Time: $ELAPSED minutes elapsed"
+              TUNNEL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
+              echo "🌐 URL: $TUNNEL"
+              echo "🔑 Password: HarmesDeploy2024!"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             fi
             
             sleep 60
+            ELAPSED=$((ELAPSED + 1))
           done
+          
+          echo "⏰ 6 hours completed!"
