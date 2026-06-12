@@ -141,12 +141,21 @@ jobs:
           
           python3 gist_update.py "$TUNNEL_URL" "$USERNAME" "$PASSWORD" "$API_KEY"
           
-          curl -s -X PATCH "https://api.github.com/gists/f6e14605827ea2fc1d41ee79b54e5c92" \
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X PATCH "https://api.github.com/gists/f6e14605827ea2fc1d41ee79b54e5c92" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d @/tmp/gist_payload.json
+            -d @/tmp/gist_payload.json)
           
-          echo "[OK] Credentials saved to Gist"
+          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          echo "Gist update response code: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Gist update failed!"
+            echo "$RESPONSE"
+            exit 1
+          fi
+          
+          echo "[OK] Credentials saved to Gist: https://gist.github.com/sathxum/f6e14605827ea2fc1d41ee79b54e5c92"
 
       - name: Display Access Info
         run: |
