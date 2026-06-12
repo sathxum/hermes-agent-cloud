@@ -110,7 +110,6 @@ jobs:
           docker logs hermes --tail 20
 
       - name: Start Cloudflare Tunnel
-        id: tunnel
         run: |
           pkill -f cloudflared 2>/dev/null || true
           nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
@@ -132,11 +131,22 @@ jobs:
             cat cloudflared.log
             exit 1
           fi
+
+      - name: Save Access Info to Gist
+        run: |
+          TUNNEL_URL="${{ env.TUNNEL_URL }}"
+          USERNAME="${{ env.DASHBOARD_USERNAME }}"
+          PASSWORD="${{ env.DASHBOARD_PASSWORD }}"
+          API_KEY="${{ env.API_SERVER_KEY }}"
           
-          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
-          echo "dashboard_user=${{ env.DASHBOARD_USERNAME }}" >> $GITHUB_OUTPUT
-          echo "dashboard_pass=${{ env.DASHBOARD_PASSWORD }}" >> $GITHUB_OUTPUT
-          echo "api_key=${{ env.API_SERVER_KEY }}" >> $GITHUB_OUTPUT
+          python3 gist_update.py "$TUNNEL_URL" "$USERNAME" "$PASSWORD" "$API_KEY"
+          
+          curl -s -X PATCH "https://api.github.com/gists/f6e14605827ea2fc1d41ee79b54e5c92" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/gist_payload.json
+          
+          echo "[OK] Credentials saved to Gist"
 
       - name: Display Access Info
         run: |
@@ -156,6 +166,8 @@ jobs:
           echo ""
           echo "  RUNTIME: 6 hours max"
           echo "============================================"
+          echo ""
+          echo "  Gist: https://gist.github.com/sathxum/f6e14605827ea2fc1d41ee79b54e5c92"
 
       - name: Monitor for 6 Hours
         run: |
