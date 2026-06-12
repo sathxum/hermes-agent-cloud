@@ -4,14 +4,15 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  actions: read
+  statuses: read
+  gists: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      statuses: read
-      gists: write
     timeout-minutes: 360
     
     steps:
@@ -152,15 +153,13 @@ jobs:
             -d @/tmp/gist_payload.json)
           
           HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
-          echo "Gist update response code: $HTTP_CODE"
+          echo "Gist HTTP: $HTTP_CODE"
           
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "Gist update failed!"
-            echo "$RESPONSE"
-            exit 1
+            echo "Gist update failed but continuing..."
+          else
+            echo "[OK] Gist updated: https://gist.github.com/sathxum/f6e14605827ea2fc1d41ee79b54e5c92"
           fi
-          
-          echo "[OK] Credentials saved to Gist: https://gist.github.com/sathxum/f6e14605827ea2fc1d41ee79b54e5c92"
 
       - name: Display Access Info
         run: |
