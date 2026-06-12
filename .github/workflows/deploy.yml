@@ -63,7 +63,6 @@ jobs:
             "HERMES_DASHBOARD_PORT=9119" \
             > ~/.hermes/.env
           chmod 600 ~/.hermes/.env
-          cat ~/.hermes/.env
 
       - name: Pull Official Hermes Agent
         run: |
@@ -111,10 +110,12 @@ jobs:
           docker logs hermes --tail 20
 
       - name: Start Cloudflare Tunnel
+        id: tunnel
         run: |
           pkill -f cloudflared 2>/dev/null || true
           nohup cloudflared tunnel --url http://localhost:9119 > cloudflared.log 2>&1 &
           
+          TUNNEL_URL=""
           for i in $(seq 1 30); do
             TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
             if [ -n "$TUNNEL_URL" ]; then
@@ -126,12 +127,16 @@ jobs:
             sleep 2
           done
           
-          FINAL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
-          if [ -z "$FINAL" ]; then
+          if [ -z "$TUNNEL_URL" ]; then
             echo "FAIL: No tunnel URL"
             cat cloudflared.log
             exit 1
           fi
+          
+          echo "tunnel_url=$TUNNEL_URL" >> $GITHUB_OUTPUT
+          echo "dashboard_user=${{ env.DASHBOARD_USERNAME }}" >> $GITHUB_OUTPUT
+          echo "dashboard_pass=${{ env.DASHBOARD_PASSWORD }}" >> $GITHUB_OUTPUT
+          echo "api_key=${{ env.API_SERVER_KEY }}" >> $GITHUB_OUTPUT
 
       - name: Display Access Info
         run: |
