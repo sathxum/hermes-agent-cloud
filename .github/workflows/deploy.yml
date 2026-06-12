@@ -12,15 +12,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Install Docker
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io docker-compose curl
-          sudo systemctl enable docker
-          docker --version
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Create directories
-        run: mkdir -p ~/hermes-data ~/workspace
+        run: |
+          mkdir -p ~/hermes-data ~/workspace
+          echo "✅ Directories created"
 
       - name: Generate Credentials
         run: |
@@ -31,52 +29,60 @@ jobs:
           echo "Session Secret: $(openssl rand -hex 48)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Pull Image
+      - name: Start Hermes with Docker Run
         run: |
-          echo "📦 Pulling Hermes image..."
-          docker pull ekkye8888/hermes-web-ui:latest || docker pull ekkoye8888/hermes-web-ui:latest || echo "Will try without pulling"
-
-      - name: Start Container
-        run: |
-          echo "🐳 Starting container..."
+          echo "🐳 Pulling and starting Hermes..."
+          docker pull ekkye8888/hermes-web-ui:latest 2>/dev/null || \
+          docker pull ekkoye8888/hermes-web-ui:latest 2>/dev/null || \
+          echo "⚠️ Pull failed, trying to run anyway"
+          
           docker stop hermes-webui 2>/dev/null || true
           docker rm hermes-webui 2>/dev/null || true
-          docker network create hermes-net 2>/dev/null || true
           
           docker run -d \
             --name hermes-webui \
-            --network hermes-net \
+            --restart unless-stopped \
             -p 8648:8648 \
             -p 6060:6060 \
             -v ~/hermes-data:/root/.hermes \
             -v ~/workspace:/workspace \
-            ekkye8888/hermes-web-ui:latest || \
+            ekkye8888/hermes-web-ui:latest 2>/dev/null || \
           docker run -d \
             --name hermes-webui \
-            --network hermes-net \
+            --restart unless-stopped \
             -p 8648:8648 \
             -p 6060:6060 \
             -v ~/hermes-data:/root/.hermes \
             -v ~/workspace:/workspace \
-            ekkoye8888/hermes-web-ui:latest || \
-          echo "⚠️ Container start failed"
+            ekkoye8888/hermes-web-ui:latest 2>/dev/null || \
+          echo "❌ Container failed to start"
           
-          sleep 10
-          docker ps --format "table {{.Names}}\t{{.Status}}"
+          sleep 15
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
       - name: Check Status
         run: |
           echo "🔍 Checking Hermes..."
-          docker ps | grep hermes-webui || echo "❌ Not running"
-          docker logs hermes-webui --tail 30 2>/dev/null || echo "No logs"
+          if docker ps | grep -q hermes-webui; then
+            echo "✅ Container is RUNNING"
+            docker logs hermes-webui --tail 50
+          else
+            echo "❌ Container NOT running"
+            docker ps -a
+          fi
 
       - name: Final Output
+        if: success()
         run: |
           echo ""
-          echo "╔════════════════════════════════════════════════════╗"
-          echo "║         🎉 HERMES AGENT DEPLOYMENT 🎉            ║"
-          echo "╠════════════════════════════════════════════════════╣"
-          echo "║  🌐 Access: http://localhost:8648                ║"
-          echo "║  🔑 Password: HarmesDeploy2024!                  ║"
-          echo "║  📦 Image: ekkye8888/hermes-web-ui:latest       ║"
-          echo "╚════════════════════════════════════════════════════╝"
+          echo "╔════════════════════════════════════════════════════════╗"
+          echo "║         🎉 HERMES AGENT DEPLOYED SUCCESS! 🎉          ║"
+          echo "╠════════════════════════════════════════════════════════╣"
+          echo "║  🌐 Local Access: http://localhost:8648              ║"
+          echo "║  💬 Gateway: http://localhost:6060                   ║"
+          echo "║  🔑 Password: HarmesDeploy2024!                      ║"
+          echo "║  📦 Image: hermes-web-ui                             ║"
+          echo "║                                                        ║"
+          echo "║  ⚠️  For Internet Access:                            ║"
+          echo "║     Add Cloudflare tunnel token as secret            ║"
+          echo "╚════════════════════════════════════════════════════════╝"
