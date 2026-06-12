@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -87,7 +90,7 @@ jobs:
             -e "API_SERVER_KEY=${{ env.API_SERVER_KEY }}" \
             -e "API_SERVER_CORS_ORIGINS=*" \
             -e "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${{ env.DASHBOARD_USERNAME }}" \
-            -e "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=${{ env.DASHBOARD_PASSWORD }}" \
+            -e "HERMES_DASHBOARD_BASIC_PASSWORD=${{ env.DASHBOARD_PASSWORD }}" \
             -e "HERMES_DASHBOARD_BASIC_AUTH_SECRET=${{ env.DASHBOARD_SECRET }}" \
             --env-file ~/.hermes/.env \
             nousresearch/hermes-agent:latest gateway run
@@ -145,7 +148,7 @@ jobs:
           git config user.email "deploy@hermes-agent.dev"
           git config user.name "Hermes Deploy Bot"
           git add deploy-info.txt
-          git commit -m "feat: deployment info"
+          git commit -m "feat: deployment info" || echo "Commit done"
           git push origin main || echo "Push done"
 
       - name: Display Final Access Details
@@ -196,10 +199,10 @@ jobs:
                 git config user.email "deploy@hermes-agent.dev"
                 git config user.name "Hermes Deploy Bot"
                 git add deploy-info.txt
-                git commit -m "update: $ELAPSED min" 2>/dev/null
+                git commit -m "update: $ELAPSED min" 2>/dev/null || true
                 git push origin main 2>/dev/null || true
                 
-                echo "[$ELAPSED min] URL: $TUNNEL | User: ${{ env.DASHBOARD_USERNAME }}"
+                echo "[$ELAPSED min] URL: $TUNNEL"
               fi
             fi
             
